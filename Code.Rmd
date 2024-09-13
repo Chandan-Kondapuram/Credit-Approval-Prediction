@@ -1,0 +1,448 @@
+---
+title: "Credit Approval Prediction"
+author: "Chandan Kondapuram"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+# Introduction
+
+## Dataset Description
+
+The `Credit` dataset from the `ISLR2` package provides insights into individuals' personal and financial details, used to assess their creditworthiness. The dataset includes variables such as `Income`, `Limit`, `Rating`, `Cards`, `Age`, `Education`, `Gender`, `Student`, `Married`, `Region`, and `Balance`.
+
+
+```{r, warning=FALSE}
+library(ISLR2)
+data("Credit")
+```
+
+
+## Target Population and Data Collection
+This dataset likely represents individuals who are credit card holders or applicants. Details on the sampling strategy are not provided, which could be important in understanding any potential biases in the data. For instance, if certain demographics are overrepresented, the model predictions could be skewed towards these groups.
+
+## Prediction Problem
+The primary goal is to predict whether an individual will be approved for a new credit line, based on financial stability and responsibility indicators such as income, limit, and credit rating. A binary variable, `CreditApproval`, has been created for this purpose.
+
+```{r}
+# Calculate medians for income, credit limit, rating, and balance
+median_income <- median(Credit$Income)
+median_limit <- median(Credit$Limit)
+median_rating <- median(Credit$Rating)
+
+# Simulate the CreditApproval variable
+# Assumptions:
+# - High income (above median)
+# - High credit limit (above median)
+# - High credit rating (above median)
+
+Credit$CreditApproval <- as.factor(ifelse(
+  Credit$Income > median_income & Credit$Limit > median_limit &
+  Credit$Rating > median_rating , 1, 0))
+
+
+# Check the distribution of the new variable
+table(Credit$CreditApproval)
+```
+
+## Data Splitting and Usage Plan
+The dataset will be divided into a training set (80%) and a test set (20%). The training set will be used to train and tune the model, including feature selection and regularization. The test set will serve to evaluate the model's performance on new, unseen data, ensuring its applicability and generalizability.
+
+
+```{r}
+set.seed(7)
+train_idx <- sample(1:nrow(Credit), size = 0.8 * nrow(Credit))
+train_data <- Credit[train_idx, ]
+test_data <- Credit[-train_idx, ]
+```
+
+
+
+
+# Statistical learning strategies and methods 
+
+## Exploratory Data Analysis and Data Preprocessing
+
+I performed a thorough exploratory analysis on the training data to understand the distributions of various features, detect outliers, and identify potential correlations between variables. This analysis includes visualizations such as histograms, box plots, and scatter plots to examine the relationships between predictors and the target variable `CreditApproval`.
+
+```{r, warning=FALSE}
+library(ggplot2)
+# Histogram for Income
+ggplot(train_data, aes(x=Income)) + geom_histogram(bins=30, fill="blue", color="black") + 
+    ggtitle("Distribution of Income")
+```
+
+
+The histogram of `Income` reveals a right-skewed distribution, suggesting that most individuals have lower incomes, with fewer high-income earners. This could potentially affect linear model assumptions, which typically expect normally distributed input variables.
+
+
+
+
+
+
+```{r}
+ggplot(train_data, aes(x=CreditApproval, y=Limit, fill=CreditApproval)) + 
+    geom_boxplot() + 
+    ggtitle("Credit Limit by Approval Status")
+```
+
+The boxplot for `Limit` by `CreditApproval` status illustrates that approved individuals generally have higher limits. This difference in distribution indicates that `Limit` is a potential key predictor in determining credit approval. The presence of outliers, particularly in the approved group, will be further examined to assess their impact on the predictive model.
+
+
+
+```{r}
+# Correlation matrix plot
+correlations <- cor(train_data[, sapply(train_data, is.numeric)])
+corrplot::corrplot(correlations, method = "circle")
+```
+
+Correlation matrix indicates significant multicollinearity between `Income`, `Limit`, and `Rating`, which may influence the stability of our models. Given these relationships, ridge regression is proposed as it helps in managing multicollinearity by penalizing the size of coefficients and thus reducing model variance.
+
+**Initial Data Inspection**
+
+```{r}
+# Viewing rows of the dataset.
+head(train_data)
+```
+
+At the outset, I examined the first few rows of the training dataset to understand the structure and types of data presented. This preliminary inspection was critical for identifying any overt inconsistencies or missing values, providing a basis for more detailed data manipulation and analysis.
+
+
+
+**Summary Statistics**
+
+```{r}
+# Summary statistics for numerical features.
+summary(train_data)
+```
+
+Generating summary statistics for all numerical features allowed me to delve deeper into the dataset. These statistics provided insights into central tendencies, dispersion, and potential outliers, helping identify features with extreme values that might skew the analysis.
+
+
+
+
+
+**Visualizing Outliers**
+
+```{r}
+library(ggplot2)
+library(tidyr)
+
+# Reshape the data to long format for ggplot
+long_data <- pivot_longer(train_data, cols = c("Income", "Rating", "Limit"), names_to = "Variable", values_to = "Value")
+
+# Create the plot
+outlier_plot <- ggplot(long_data, aes(x = Variable, y = Value)) +
+  geom_boxplot(fill = "gray", color = "black", outlier.color = "red", outlier.shape = 19) +
+  facet_wrap(~ Variable, scales = "free") +  # Facet by variable to create separate plots for each
+  labs(title = "Boxplots for Income, Rating, and Limit", x = NULL, y = "Value") +
+  theme_minimal()
+
+print(outlier_plot)
+```
+
+
+
+The boxplots for `Income`, `Rating`, and `Limit` reveal significant variability and the presence of outliers in these key financial indicators. Specifically, outliers in the `Income` and `Limit` variables suggest the existence of individuals with disproportionately high income and credit limits, which could be representative of a specific segment of the population or potential anomalies in data collection. The `Rating` boxplot also indicates outliers, primarily on the higher end, which could influence the behavior of predictive models.
+
+
+
+
+
+**Handling Missing Data**
+
+```{r}
+sum(is.na(train_data))
+```
+
+
+
+**Removing Outliers**
+
+Considering the influence of extreme values on model accuracy, I implemented a method to remove outliers based on the interquartile range (IQR).
+
+
+```{r}
+cap_outliers <- function(data, feature) {
+  Q1 <- quantile(data[[feature]], 0.25, na.rm = TRUE)
+  Q3 <- quantile(data[[feature]], 0.75, na.rm = TRUE)
+  IQR <- Q3 - Q1
+  lower.bound <- Q1 - 1.5 * IQR
+  upper.bound <- Q3 + 1.5 * IQR
+
+  # Check and replace lower outliers
+  lower_outliers <- which(data[[feature]] < lower.bound)
+  if (length(lower_outliers) > 0) {
+    data[[feature]][lower_outliers] <- lower.bound
+  }
+
+  # Check and replace upper outliers
+  upper_outliers <- which(data[[feature]] > upper.bound)
+  if (length(upper_outliers) > 0) {
+    data[[feature]][upper_outliers] <- upper.bound
+  }
+
+  return(data)
+}
+
+# Apply the function to 'Rating' and 'Limit' in the training data
+train_data <- cap_outliers(train_data, 'Rating')
+train_data <- cap_outliers(train_data, 'Limit')
+train_data <- cap_outliers(train_data, 'Income')
+```
+
+
+**Removing of outliners**
+
+```{r}
+out_remov_data <- train_data
+long_data <- pivot_longer(out_remov_data, cols = c("Income", "Rating", "Limit"), names_to = "Variable", values_to = "Value")
+outlier_plot <- ggplot(long_data, aes(x = Variable, y = Value)) +
+  geom_boxplot(fill = "gray", color = "black", outlier.color = "red", outlier.shape = 19) +
+  facet_wrap(~ Variable, scales = "free") +  # Facet by variable to create separate plots for each
+  labs(title = "Boxplots for Income, Rating, and Limit", x = NULL, y = "Value") +
+  theme_minimal()
+print(outlier_plot)
+```
+
+
+This boxplot shows that their are no outliners as we removed it.
+
+
+**Preparation of Categorical Variables**
+
+```{r}
+# Convert categorical variables to factor type if not already
+train_data$Student <- as.factor(train_data$Student)
+train_data$Own <- as.factor(train_data$Own)
+train_data$Married <- as.factor(train_data$Married)
+train_data$Region <- as.factor(train_data$Region)
+```
+
+
+
+
+## Statistical Learning Approaches
+
+I used logistic regression as the primary modeling approach due to its effectiveness in binary classification problems. This method is particularly suitable for our prediction task as it allows us to estimate the probability of credit approval based on the logistic function of predictors. Additionally, explored Ridge Regression to address potential multicollinearity among predictors, enhancing the model's stability and performance.
+
+
+
+## Feature Engineering Strategies
+
+Effective feature engineering enhances model accuracy and interpretability. In My approach, I focus on the following strategies:
+
+**Selection**: I applied best subset selection(Backward selection) using the `leaps` package to determine the most relevant features for predicting credit approval. This method evaluates all possible combinations of features to select the subset that provides the best fit according to predetermined criteria such as AIC, BIC, or adjusted R-squared.
+
+
+```{r, warning=FALSE}
+library(leaps)
+regfit.fwd = regsubsets(CreditApproval ~ ., data = Credit, nvmax = 10, method = "backward")
+summary_fwd <- summary(regfit.fwd)
+optimal_cp <- which.min(summary_fwd$cp)
+optimal_cp
+colnames(Credit[, -1])[summary_fwd$which[optimal_cp, -1]]
+optimal_bic <- which.min(summary_fwd$bic)
+optimal_bic
+colnames(Credit[, -1])[summary_fwd$which[optimal_bic, -1]]
+optimal_adjr2 <- which.max(summary_fwd$adjr2)
+optimal_adjr2
+colnames(Credit[, -1])[summary_fwd$which[optimal_adjr2, -1]]
+```
+
+
+Here based on the results I choosed BIC Predictors (Limit and Rating) as the  best subsets because selection is based least BIC or high r-sqaure predictors. 
+
+
+**Creating a new data by best subset Selection predictors**
+
+```{r}
+# This train_data_selected is used for the Logistic Regression model.
+# Using the coefficients from best subset selection
+best_vars <- colnames(Credit[, -1])[summary_fwd$which[optimal_bic, -1]]
+
+# Preparing data with selected variables
+train_data_selected <- train_data[, best_vars]
+test_data_selected <- test_data[, best_vars]
+
+# Adding the response variable
+train_data_selected$CreditApproval <- train_data$CreditApproval
+test_data_selected$CreditApproval <- test_data$CreditApproval
+```
+
+
+
+## Regularization with Ridge Regression
+
+Their is likelihood of multicollinearity among predictors such as `Income`, `Limit`, and `Rating`, I implemented Ridge Regression Also inorder to compare the models. This shrinkage method regularizes the coefficients, effectively reducing overfitting and improving the model's generalization ability by adding a penalty equivalent to the square of the magnitude of coefficients.
+
+
+```{r, warning=FALSE}
+library(glmnet)
+# Creating matrix of predictors and vector of response variable
+x_train <- model.matrix(CreditApproval ~ . -1, data=train_data)  # -1 to omit intercept
+y_train <- as.numeric(train_data$CreditApproval) - 1  # Convert factors to binary
+
+# Lambda grid for regularization
+grid <- 10^seq(10, -2, length=100)
+# Fit Ridge Regression model
+ridge_mod <- glmnet(x_train, y_train, family="binomial", alpha=0, lambda=grid)
+
+# Cross-validation for lambda selection
+cv_ridge <- cv.glmnet(x_train, y_train, family="binomial", alpha=0)
+best_lambda <- cv_ridge$lambda.min
+best_lambda
+plot(cv_ridge)
+coef(ridge_mod, s=best_lambda)
+```
+
+The optimal lambda of 0.03674 minimizes the cross-validation error, which indicates an effective balance between model complexity and predictive accuracy. This regularization parameter helps in reducing the impact of multicollinearity among predictors while avoiding overfitting. The coefficients provide valuable insights into factors influencing credit approval. For instance, being a student significantly increases the likelihood of approval, which may reflect targeted financial products for this demographic. Conversely, a higher number of credit cards is associated with a lower chance of approval, possibly indicating higher risk due to multiple existing credit lines. These interpretations help in understanding the nuanced relationships within  data.
+
+
+
+
+
+
+
+## Applicability of Methods
+
+The logistic regression model, central to my predictive modeling, assumes a linear relationship between the log-odds of the dependent variable and each predictor. While this assumption may not always hold strictly, the use of regularization through Ridge Regression helps mitigate potential variance inflation due to multicollinearity among predictors. This method is particularly suitable for my dataset where financial attributes might be highly correlated, thus helping to stabilize estimates and enhance model performance.
+
+Furthermore, the subset selection approach ensures that only the most significant predictors are retained, simplifying the model and potentially reducing the risk of overfitting. This combination of methods is tailored to exploit the dataset's characteristics effectively, aiming to produce a robust model for predicting credit approval.
+
+
+
+## Predictive analysis and results 
+
+### Logistic Regression Model
+
+The logistic regression model was fitted using variables selected through the best subset selection, focusing on their impact on the likelihood of credit approval.
+
+
+```{r,warning=FALSE}
+set.seed(15)
+library(caret)
+# Logistic Regression Example
+credit_model <- glm(CreditApproval ~., data=train_data_selected,family=binomial())
+levels(train_data_selected$CreditApproval) <- make.names(levels(train_data_selected$CreditApproval))
+fitControl <- trainControl(
+  method = "cv",
+  number = 10,
+  classProbs = TRUE,
+  summaryFunction = defaultSummary  
+)
+cv_results <- train(CreditApproval ~ ., data=train_data_selected, method="glm",
+                    family="binomial", trControl=fitControl)
+print(cv_results)
+```
+
+
+The results of our Logistic regression model are quite promising. Achieving an accuracy of about 86.57% and a Kappa statistic of 0.70974 with 10-fold cross-validation indicates that the model is robust and performs consistently across different subsets of your data. The Kappa score, in particular, suggests good agreement between the predicted and actual class labels, accounting for the balance of classes, which is often a challenge in binary classification tasks.
+
+
+
+
+
+
+
+## Estimation of Model Performance
+
+```{r}
+# Model Evaluation
+predictions <- predict(credit_model, test_data_selected, type="response")
+predicted_class <- ifelse(predictions > 0.5, 1, 0)
+confusionMatrix(data=factor(predicted_class, levels=c(0, 1)), reference=factor(test_data_selected$CreditApproval, levels=c(0, 1)))
+```
+The logistic regression model demonstrated robust performance in the task of predicting credit approval, with an accuracy of 85% and a balanced accuracy of 83.52%, ensuring reliability across both classes of outcomes. The high sensitivity of 88.46% suggests that the model is particularly effective in identifying qualified applicants for credit approval.
+
+
+
+```{r}
+accuracy <- mean(predicted_class == test_data_selected$CreditApproval)
+cat("Accuracy:", accuracy, "\n")
+```
+Predicted Accuracy of the Logistic regression model on Test data is `r accuracy`.The training accuracy (86%) and test accuracy (85%) are quite close
+
+
+## Error rate of model.
+
+```{r}
+# Convert predicted_class and test_data$CreditApproval to numeric for error rate calculation
+predicted_class_numeric <- as.numeric(as.character(predicted_class))
+test_data_selected$CreditApproval_numeric <- as.numeric(as.character(test_data_selected$CreditApproval))
+
+# Calculate Brier Score (similar to MSE)
+mse_log <- mean((predictions - test_data_selected$CreditApproval_numeric)^2)
+
+
+# Calculate Error Rate
+error_rate <- mean(predicted_class_numeric != test_data_selected$CreditApproval_numeric)
+
+cat("Error Rate:", error_rate, "\n")
+cat("MSE for Logistic Regression:", mse_log, "\n")
+```
+
+This indicates that the model incorrectly predicts the outcome 15% of the time. This aligns with the accuracy of 85% (1 - 0.15 = 0.85). The error rate provides a straightforward measure of the frequency of mistakes made by the model over the dataset.the Mean Squared Error (MSE) of 0.0891445 further substantiates the precision of the model's probability estimates against the actual outcomes, indicating minimal deviation in the model's predictions.
+
+
+```{r,warning=FALSE}
+# ROC Curve
+library(pROC)
+roc_curve <- roc(test_data_selected$CreditApproval, predictions)
+plot(roc_curve)
+auc(roc_curve)
+```
+
+A perfect classifier would reach a point at (0,1), meaning 100% sensitivity (no false negatives) and 100% specificity (no false positives). our ROC curve approaches this ideal point, especially in the top left corner, suggesting high effectiveness in classifying the positive class correctly without incorrectly labeling the negative class, (Area Under the Curve) of 0.9519 are highly indicative of our logistic regression model's excellent performance in discriminating between the classes of credit approval
+
+
+
+## Prediction on ridge regression
+
+```{r}
+# Make predictions on test data
+x_test <- model.matrix(CreditApproval ~ . -1, data=test_data)
+predictions_ridge <- predict(ridge_mod, s=best_lambda, newx=x_test, type="response")
+predicted_class_ridge <- ifelse(predictions_ridge > 0.5, "1", "0")
+# Confusion matrix to evaluate model
+table(Predicted=predicted_class_ridge, Actual=test_data$CreditApproval)
+ridge_acc = mean(predicted_class_ridge == test_data$CreditApproval)
+ridge_acc
+```
+Based on the Confusion matrix and accuracy Ridge provided about `r ridge_acc`.
+
+
+## Conculsion
+
+**Scope:** The predictive analysis was primarily designed to determine credit approval using key financial indicators such as income, limit, and rating. By employing logistic regression and ridge regression, the study aimed to model the binary outcome of credit approval efficiently.
+
+**Generalizability:** As expected, ridge regression proved advantageous in this context due to the presence of multicollinearity among predictors. Multicollinearity, where predictors are highly correlated, can destabilize standard regression models, leading to unreliable and highly variable estimates of regression coefficients. Ridge regression addresses this issue effectively by imposing a penalty on the size of coefficients. This penalty shrinks the coefficients towards zero but does not set any to zero; rather, it reduces the impact of less important predictors while retaining all variables in the model. This approach not only helps in dealing with multicollinearity but also enhances model robustness by preventing overfitting.
+
+The ridge regression model, which incorporates these shrinkage techniques, achieved a commendable accuracy of 88.7%. This was notably higher compared to the logistic regression model, which achieved an 85% accuracy. The logistic regression was applied to subsets of predictors selected via best subset selection, aiming to identify the most significant predictors. However, the inherent limitations of logistic regression in handling multicollinearity likely contributed to its slightly lower performance.
+
+These results underscore the effectiveness of ridge regression in scenarios where predictor variables are interdependent. This makes the model highly applicable and reliable in similar financial datasets, assuming the presence of similar types of multicollinearity among predictors. However, the model's effectiveness and generalizability would still need to be validated on external datasets to ensure its applicability across different demographic and economic conditions.
+
+#### Limitations
+
+- The creation of the binary outcome for credit approval was based on arbitrary median thresholds of income, limit, and rating. This method may oversimplify the complexity of credit approval processes in real-world scenarios.
+
+-  While best subset selection provided a robust method for selecting predictive features, it might lead to overfitting if not properly validated across multiple datasets or using techniques like cross-validation.
+
+- Both logistic and ridge regression assume linear relationships between the log-odds of the outcome and independent variables, which may not fully capture non-linear interactions between features.
+
+### Possibilities for Improvement
+
+- Introducing polynomial or interaction terms might capture more complex relationships between features. Additionally, including more demographic and behavioral factors could provide a more holistic view of creditworthiness.
+
+- Exploring other machine learning models like random forests, support vector machines, or neural networks could potentially improve prediction accuracy and robustness against overfitting.
+
+- Testing the model against data from different time periods could help assess its stability and adaptability to changing economic conditions.
+
+
+
+
