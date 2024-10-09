@@ -49,7 +49,6 @@ This project focuses on predicting whether an individual will be approved for a 
 ```plaintext
 ├── data/                         # Contains the dataset used for training and testing
 ├── Code.Rmd                      # Main R script with model code
-├── Project.pdf              # Project report explaining methods and results
 ├── README.md                     # Project documentation
 ```
 
