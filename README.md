@@ -49,7 +49,7 @@ This project focuses on predicting whether an individual will be approved for a 
 ```plaintext
 ├── data/                         # Contains the dataset used for training and testing
 ├── Code.Rmd                      # Main R script with model code
-├── Final-project.pdf              # Project report explaining methods and results
+├── Project.pdf              # Project report explaining methods and results
 ├── README.md                     # Project documentation
 ```
 
@@ -102,4 +102,3 @@ The project employs two primary models:
 
 For any questions or contributions, feel free to reach out:
 - GitHub: [Chandan-Kondapuram](https://github.com/Chandan-Kondapuram)
-- Email: chandan@example.com
